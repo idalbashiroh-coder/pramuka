@@ -1,0 +1,8 @@
+{
+  "name": "SI-PRAMUKA: Iuran Rutin & Rekapitulasi",
+  "description": "Aplikasi manajemen iuran rutin latihan Pramuka terintegrasi Google Spreadsheet dengan rekapitulasi otomatis bulanan dan per-regu.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
