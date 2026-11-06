@@ -23,8 +23,11 @@ interface MonthlyRecapTabProps {
   transactions: PaymentRecord[];
   settings: GudepSettings;
   selectedMonth: string;
+  appsScriptUrl?: string;
   onSelectMonth: (monthPeriod: string) => void;
   onSyncSpreadsheet: () => void;
+  onSyncRecapsToSpreadsheet?: (monthPeriod?: string) => Promise<void>;
+  onOpenSheetModal?: () => void;
 }
 
 export const MonthlyRecapTab: React.FC<MonthlyRecapTabProps> = ({
@@ -32,14 +35,18 @@ export const MonthlyRecapTab: React.FC<MonthlyRecapTabProps> = ({
   transactions,
   settings,
   selectedMonth,
+  appsScriptUrl,
   onSelectMonth,
   onSyncSpreadsheet,
+  onSyncRecapsToSpreadsheet,
+  onOpenSheetModal,
 }) => {
   const [filterStatus, setFilterStatus] = useState<'all' | 'paid' | 'unpaid'>('all');
   const [filterRegu, setFilterRegu] = useState<string>('all');
   const [searchMember, setSearchMember] = useState<string>('');
   const [copiedWA, setCopiedWA] = useState(false);
   const [isPrintModalOpen, setIsPrintModalOpen] = useState(false);
+  const [isSavingToSheet, setIsSavingToSheet] = useState(false);
 
   // Available months from transactions and recent 6 months
   const availableMonths = useMemo(() => {
@@ -161,6 +168,29 @@ export const MonthlyRecapTab: React.FC<MonthlyRecapTabProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Apps Script Status Banner */}
+      {!appsScriptUrl && onOpenSheetModal && (
+        <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0" />
+            <div>
+              <span className="font-bold text-amber-900 block">
+                Sinkronisasi Tulis ke Google Spreadsheet Belum Terhubung
+              </span>
+              <span className="text-stone-600">
+                Agar lembar <code>REKAP_BULANAN</code> dan <code>REKAP_REGU</code> langsung terisi di Google Spreadsheet Anda, masukkan URL Web App Google Apps Script (hanya 1 menit).
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={onOpenSheetModal}
+            className="px-3.5 py-2 rounded-xl bg-amber-800 hover:bg-amber-700 text-white font-bold whitespace-nowrap shadow-xs transition shrink-0"
+          >
+            Hubungkan Apps Script
+          </button>
+        </div>
+      )}
+
       {/* Month Selector & Action Bar */}
       <div className="bg-white rounded-2xl p-5 border border-stone-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -207,6 +237,23 @@ export const MonthlyRecapTab: React.FC<MonthlyRecapTabProps> = ({
           >
             <Printer className="w-3.5 h-3.5 text-stone-600" />
             <span>Cetak Rekap</span>
+          </button>
+
+          {/* Simpan Rekap ke Google Spreadsheet */}
+          <button
+            onClick={async () => {
+              if (onSyncRecapsToSpreadsheet) {
+                setIsSavingToSheet(true);
+                await onSyncRecapsToSpreadsheet(selectedMonth);
+                setIsSavingToSheet(false);
+              }
+            }}
+            disabled={isSavingToSheet}
+            className="px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white flex items-center gap-1.5 shadow-xs transition"
+            title="Simpan tabel rekap bulanan ini ke sheet REKAP_BULANAN di Google Spreadsheet"
+          >
+            <FileSpreadsheet className={`w-3.5 h-3.5 ${isSavingToSheet ? 'animate-spin' : ''}`} />
+            <span>{isSavingToSheet ? 'Menyimpan...' : 'Simpan ke Spreadsheet'}</span>
           </button>
         </div>
       </div>
@@ -368,7 +415,7 @@ export const MonthlyRecapTab: React.FC<MonthlyRecapTabProps> = ({
                 filteredMatrix.map((item, idx) => {
                   return (
                     <tr
-                      key={item.member.id}
+                      key={`${item.member.id}-${idx}`}
                       className={`hover:bg-amber-50/30 transition ${
                         item.isLunas ? '' : 'bg-rose-50/20'
                       }`}

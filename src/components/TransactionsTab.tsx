@@ -65,9 +65,16 @@ export const TransactionsTab: React.FC<TransactionsTabProps> = ({
     [filteredTransactions]
   );
 
-  const handleDelete = async (tx: PaymentRecord) => {
-    if (window.confirm(`Hapus catatan transaksi ${tx.id} atas nama "${tx.memberName}" (${formatRupiah(tx.amount)})?`)) {
-      await onDeleteTransaction(tx.id);
+  const [confirmDeleteTx, setConfirmDeleteTx] = useState<PaymentRecord | null>(null);
+
+  const handleDelete = (tx: PaymentRecord) => {
+    setConfirmDeleteTx(tx);
+  };
+
+  const handleConfirmDelete = async () => {
+    if (confirmDeleteTx) {
+      await onDeleteTransaction(confirmDeleteTx.id);
+      setConfirmDeleteTx(null);
     }
   };
 
@@ -179,7 +186,7 @@ export const TransactionsTab: React.FC<TransactionsTabProps> = ({
                 </tr>
               ) : (
                 filteredTransactions.map((tx, idx) => (
-                  <tr key={tx.id} className="hover:bg-amber-50/20 transition">
+                  <tr key={`${tx.id}-${idx}`} className="hover:bg-amber-50/20 transition">
                     <td className="p-3 text-center text-stone-400 font-mono">
                       {idx + 1}
                     </td>
@@ -243,6 +250,41 @@ export const TransactionsTab: React.FC<TransactionsTabProps> = ({
           </table>
         </div>
       </div>
+
+      {/* Modal Konfirmasi Hapus Transaksi */}
+      {confirmDeleteTx && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-stone-200 space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center shrink-0">
+                <Trash2 className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="font-bold text-stone-900 text-base">Hapus Catatan Iuran?</h3>
+                <p className="text-xs text-stone-600 leading-relaxed">
+                  Apakah Anda yakin ingin menghapus transaksi <strong>{confirmDeleteTx.id}</strong> atas nama{' '}
+                  <strong>{confirmDeleteTx.memberName}</strong> ({formatRupiah(confirmDeleteTx.amount)})?
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-stone-100">
+              <button
+                onClick={() => setConfirmDeleteTx(null)}
+                className="px-4 py-2 rounded-xl text-xs font-bold text-stone-600 hover:bg-stone-100 transition"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-500 text-white transition shadow-sm"
+              >
+                Ya, Hapus Transaksi
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

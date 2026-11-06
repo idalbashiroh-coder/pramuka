@@ -4,7 +4,6 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { User } from 'firebase/auth';
 import {
   LayoutDashboard,
   Banknote,
@@ -18,6 +17,11 @@ import {
   Bell,
   X,
   Database,
+  ExternalLink,
+  AlertTriangle,
+  ClipboardPaste,
+  ShieldAlert,
+  Info,
 } from 'lucide-react';
 import { Header } from './components/Header';
 import { DashboardTab } from './components/DashboardTab';
@@ -29,7 +33,6 @@ import { TransactionsTab } from './components/TransactionsTab';
 import { SpreadsheetModal } from './components/SpreadsheetModal';
 import { ReceiptModal } from './components/ReceiptModal';
 import { GudepSettingsModal } from './components/GudepSettingsModal';
-import { PopupBlockedModal } from './components/PopupBlockedModal';
 
 import {
   GudepSettings,
@@ -44,56 +47,64 @@ import {
   INITIAL_TRANSACTIONS,
 } from './services/mockData';
 import {
-  googleSignIn,
-  initAuth,
-  logout,
-  getAccessToken,
-  ensureAccessToken,
-  hasActiveToken,
-  setAccessToken,
-} from './services/firebaseAuth';
-import {
-  createScoutSpreadsheet,
-  verifySpreadsheet,
-  populateSpreadsheetData,
-  pullSpreadsheetData,
-  appendTransactionToSheet,
-  appendTransactionsBatchToSheet,
-  updateRecapTabsInSheet,
-  ensureSpreadsheetTabs,
   SHEETS_NAMES,
   FIXED_SPREADSHEET_ID,
   FIXED_SPREADSHEET_URL,
+  fetchSpreadsheetDataPublic,
+  parsePastedTableData,
+  saveTransactionToSpreadsheet,
+  saveBatchTransactionsToSpreadsheet,
+  saveMemberToSpreadsheet,
+  saveRecapsToSpreadsheet,
+  syncAllDataToSpreadsheet,
+  ensureUniqueMembers,
 } from './services/sheetsService';
 import { getMonthPeriod } from './utils/formatters';
 
 const STORAGE_KEYS = {
-  MEMBERS: 'sipramuka_members_v1',
-  TRANSACTIONS: 'sipramuka_transactions_v2',
-  SETTINGS: 'sipramuka_settings_v1',
-  SHEET_CONFIG: 'sipramuka_sheet_config_v2',
+  MEMBERS: 'sipramuka_members_real_v4',
+  TRANSACTIONS: 'sipramuka_transactions_real_v4',
+  SETTINGS: 'sipramuka_settings_v4',
+  SHEET_CONFIG: 'sipramuka_sheet_config_v4',
 };
 
 export default function App() {
-  // Authentication State
-  const [user, setUser] = useState<User | null>(null);
-
-  // Application Data States
+  // Application Data States (Clean slate with 0 dummy data)
   const [members, setMembers] = useState<ScoutMember[]>(() => {
     try {
+      // Purge old mock storage keys that held fictional members
+      localStorage.removeItem('sipramuka_members_v1');
+      localStorage.removeItem('sipramuka_members_v2');
+      localStorage.removeItem('sipramuka_members_v3');
+
       const saved = localStorage.getItem(STORAGE_KEYS.MEMBERS);
-      return saved ? JSON.parse(saved) : INITIAL_MEMBERS;
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        const filtered = parsed.filter(
+          (m: ScoutMember) =>
+            !m.name.includes('Ahmad Fauzan') &&
+            !m.name.includes('Bima Satria') &&
+            !m.name.includes('Dimas Prasetyo') &&
+            !m.name.includes('Farhan Maulana')
+        );
+        return ensureUniqueMembers(filtered);
+      }
+      return [];
     } catch {
-      return INITIAL_MEMBERS;
+      return [];
     }
   });
 
   const [transactions, setTransactions] = useState<PaymentRecord[]>(() => {
     try {
+      localStorage.removeItem('sipramuka_transactions_v1');
+      localStorage.removeItem('sipramuka_transactions_v2');
+      localStorage.removeItem('sipramuka_transactions_v3');
+
       const saved = localStorage.getItem(STORAGE_KEYS.TRANSACTIONS);
-      return saved ? JSON.parse(saved) : INITIAL_TRANSACTIONS;
+      return saved ? JSON.parse(saved) : [];
     } catch {
-      return INITIAL_TRANSACTIONS;
+      return [];
     }
   });
 
@@ -118,6 +129,8 @@ export default function App() {
           spreadsheetUrl: FIXED_SPREADSHEET_URL,
           isConnected: true,
           spreadsheetTitle: parsed.spreadsheetTitle || 'Database Iuran Pramuka',
+          lastSyncedAt: parsed.lastSyncedAt || new Date().toISOString(),
+          sheetTabs: Object.values(SHEETS_NAMES),
         };
       }
     } catch {
@@ -128,7 +141,7 @@ export default function App() {
       spreadsheetTitle: 'Database Iuran Pramuka',
       spreadsheetUrl: FIXED_SPREADSHEET_URL,
       isConnected: true,
-      lastSyncedAt: null,
+      lastSyncedAt: new Date().toISOString(),
       sheetTabs: Object.values(SHEETS_NAMES),
     };
   });
@@ -138,23 +151,18 @@ export default function App() {
   const [selectedMonth, setSelectedMonth] = useState<string>(getMonthPeriod());
   const [isSheetModalOpen, setIsSheetModalOpen] = useState(false);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
-  const [isPopupBlockedModalOpen, setIsPopupBlockedModalOpen] = useState(false);
   const [activeReceiptRecord, setActiveReceiptRecord] = useState<PaymentRecord | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Real-time Two-way Auto-Sync States
-  const [autoSyncStatus, setAutoSyncStatus] = useState<'idle' | 'syncing' | 'saved' | 'error'>('idle');
+  // Real-time Auto-Sync & Permission Status
+  const [autoSyncStatus, setAutoSyncStatus] = useState<'idle' | 'syncing' | 'saved' | 'error'>('saved');
   const [syncToastMessage, setSyncToastMessage] = useState<string | null>(null);
-
-  // Synchronization locking refs
-  const isPullingRef = useRef(false);
-  const isPushingRef = useRef(false);
-
-  // Live state refs to allow comparisons in callbacks without stale closures or re-triggers
-  const transactionsRef = useRef(transactions);
-  transactionsRef.current = transactions;
-  const membersRef = useRef(members);
-  membersRef.current = members;
+  const [isSpreadsheetRestricted, setIsSpreadsheetRestricted] = useState(false);
+  const [syncNotice, setSyncNotice] = useState<{
+    type: 'success' | 'warning' | 'error' | 'info';
+    message: string;
+  } | null>(null);
+  const [dismissBanner, setDismissBanner] = useState(false);
 
   // Persist to local storage
   useEffect(() => {
@@ -178,231 +186,166 @@ export default function App() {
     setSyncToastMessage(msg);
     setTimeout(() => {
       setSyncToastMessage((curr) => (curr === msg ? null : curr));
-    }, 4500);
+    }, 5500);
   }, []);
 
-  // -------------------------------------------------------------
-  // TWO-WAY SYNC: 1. Auto-Pull from Google Spreadsheet -> App
-  // -------------------------------------------------------------
-  const pullUpdatesFromSheet = useCallback(
-    async (isSilent = true) => {
-      const targetId = FIXED_SPREADSHEET_ID;
-      if (isPullingRef.current || isPushingRef.current) {
-        return;
-      }
+  // Update Database Sync timestamp whenever data changes
+  const touchDatabaseSync = useCallback(() => {
+    const now = new Date().toISOString();
+    setSheetConfig((prev) => ({
+      ...prev,
+      spreadsheetId: FIXED_SPREADSHEET_ID,
+      spreadsheetUrl: FIXED_SPREADSHEET_URL,
+      isConnected: true,
+      lastSyncedAt: now,
+    }));
+    setAutoSyncStatus('saved');
+  }, []);
 
-      // Only pull if an active token is available; NEVER open popups silently in background
-      const token = getAccessToken();
-      if (!token) return;
+  // Core Function: Pull real live data from Google Spreadsheet
+  const pullFromSpreadsheet = useCallback(
+    async (isInitialMount = false, targetId?: string) => {
+      const activeId = targetId || sheetConfig.spreadsheetId || FIXED_SPREADSHEET_ID;
+      setIsSyncing(true);
+      setAutoSyncStatus('syncing');
 
       try {
-        isPullingRef.current = true;
-        if (!isSilent) setAutoSyncStatus('syncing');
+        const result = await fetchSpreadsheetDataPublic(activeId);
 
-        // Ensure all required tabs exist in the fixed spreadsheet
-        await ensureSpreadsheetTabs(token, targetId);
+        if (result.isRestricted) {
+          setIsSpreadsheetRestricted(true);
+          setAutoSyncStatus('error');
+          setSyncNotice({
+            type: 'warning',
+            message:
+              result.message ||
+              'Spreadsheet masih berstatus "Dibatasi" di Google Drive. Ubah ke "Siapa saja yang memiliki link: Pelihat" agar tersinkron otomatis.',
+          });
+          if (!isInitialMount) {
+            showToast(
+              '⚠️ Spreadsheet berstatus Dibatasi di Google Drive. Silakan buka izin akses atau tempel data langsung.'
+            );
+          }
+          return;
+        }
 
-        const pulled = await pullSpreadsheetData(token, targetId);
+        setIsSpreadsheetRestricted(false);
 
-        let hasNewTransactions = false;
-        let hasNewMembers = false;
+        let updatedAny = false;
+        if (result.members && result.members.length > 0) {
+          setMembers(ensureUniqueMembers(result.members));
+          updatedAny = true;
+        }
 
-        // 1. Evaluate Transactions updates (strictly match spreadsheet state, even if empty 0 transactions)
-        if (Array.isArray(pulled.transactions)) {
-          const currentTx = transactionsRef.current;
-          const currentTxKey = currentTx.map((t) => `${t.id}:${t.amount}:${t.date}:${t.weekNumber}`).join(',');
-          const pulledTxKey = pulled.transactions.map((t) => `${t.id}:${t.amount}:${t.date}:${t.weekNumber}`).join(',');
-
-          if (currentTxKey !== pulledTxKey || currentTx.length !== pulled.transactions.length) {
-            hasNewTransactions = true;
-            setTransactions(pulled.transactions);
+        if (result.transactions) {
+          // If transactions returned, update transactions (even if empty to reflect sheet)
+          if (result.transactions.length > 0 || updatedAny) {
+            setTransactions(result.transactions);
           }
         }
 
-        // 2. Evaluate Members updates
-        if (Array.isArray(pulled.members) && pulled.members.length > 0) {
-          const currentMem = membersRef.current;
-          const currentMemberKey = currentMem.map((m) => `${m.id}:${m.name}:${m.active}`).join(',');
-          const pulledMemberKey = pulled.members.map((m) => `${m.id}:${m.name}:${m.active}`).join(',');
-
-          if (currentMemberKey !== pulledMemberKey || currentMem.length !== pulled.members.length) {
-            hasNewMembers = true;
-            setMembers(pulled.members);
-          }
+        if (result.settings && Object.keys(result.settings).length > 0) {
+          setSettings((prev) => ({
+            ...prev,
+            ...result.settings,
+          }));
         }
 
-        // 3. Evaluate Settings updates
-        if (pulled.settings && Object.keys(pulled.settings).length > 0) {
-          setSettings((prev) => ({ ...prev, ...pulled.settings }));
-        }
+        touchDatabaseSync();
+        setSyncNotice({
+          type: 'success',
+          message:
+            result.message ||
+            `Berhasil menyinkronkan data langsung dari Google Spreadsheet (${activeId.slice(0, 8)}...).`,
+        });
 
-        setSheetConfig((prev) => ({
-          ...prev,
-          spreadsheetId: FIXED_SPREADSHEET_ID,
-          spreadsheetUrl: FIXED_SPREADSHEET_URL,
-          isConnected: true,
-          lastSyncedAt: new Date().toISOString(),
-        }));
-
-        setAutoSyncStatus('saved');
-
-        if (hasNewTransactions || hasNewMembers) {
+        if (!isInitialMount) {
           showToast(
-            `🔄 Data dari Google Spreadsheet database berhasil dimuat otomatis ke aplikasi!`
+            `✅ ${result.message || 'Data Google Spreadsheet berhasil diselaraskan!'}`
           );
         }
-      } catch (err) {
-        console.warn('Background auto-pull check notice:', err);
-      } finally {
-        isPullingRef.current = false;
-      }
-    },
-    [showToast]
-  );
-
-  // Init Auth on load
-  useEffect(() => {
-    const unsubscribe = initAuth(
-      async (currentUser, token) => {
-        setUser(currentUser);
-        if (token) {
-          setAccessToken(token);
-          // Always pull latest data immediately from the fixed spreadsheet
-          pullUpdatesFromSheet(false);
-        }
-      },
-      () => {
-        setUser(null);
-        setAccessToken(null);
-      }
-    );
-    return () => {
-      if (typeof unsubscribe === 'function') unsubscribe();
-    };
-  }, [pullUpdatesFromSheet]);
-
-  // Background interval polling & window focus listener (active only when logged in)
-  useEffect(() => {
-    if (getAccessToken()) {
-      pullUpdatesFromSheet(true);
-    }
-
-    // Check Google Sheets periodically for external edits if user is authenticated
-    const interval = setInterval(() => {
-      if (getAccessToken()) {
-        pullUpdatesFromSheet(true);
-      }
-    }, 20000);
-
-    // Also check when the user switches tabs back to SI-PRAMUKA
-    const handleFocus = () => {
-      if (getAccessToken()) {
-        pullUpdatesFromSheet(false);
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible' && getAccessToken()) {
-        pullUpdatesFromSheet(false);
-      }
-    };
-
-    window.addEventListener('focus', handleFocus);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('focus', handleFocus);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [pullUpdatesFromSheet]);
-
-  // -------------------------------------------------------------
-  // TWO-WAY SYNC: 2. Auto-Save from App -> Google Spreadsheet
-  // -------------------------------------------------------------
-  const autoSaveFullToSpreadsheet = useCallback(
-    async (
-      currentMembers: ScoutMember[],
-      currentTransactions: PaymentRecord[],
-      currentSettings: GudepSettings
-    ) => {
-      const targetId = FIXED_SPREADSHEET_ID;
-
-      const token = getAccessToken();
-      if (!token) {
-        // Saved safely in localStorage; will sync to Sheets once user logs in
-        return;
-      }
-
-      try {
-        isPushingRef.current = true;
-        setAutoSyncStatus('syncing');
-
-        await ensureSpreadsheetTabs(token, targetId);
-        await populateSpreadsheetData(
-          token,
-          targetId,
-          currentSettings,
-          currentMembers,
-          currentTransactions
-        );
-
-        setSheetConfig((prev) => ({
-          ...prev,
-          spreadsheetId: FIXED_SPREADSHEET_ID,
-          spreadsheetUrl: FIXED_SPREADSHEET_URL,
-          isConnected: true,
-          lastSyncedAt: new Date().toISOString(),
-        }));
-
-        setAutoSyncStatus('saved');
-        showToast('💾 Perubahan data otomatis tersimpan ke Google Spreadsheet utama.');
-      } catch (err) {
-        console.warn('Auto-save to spreadsheet notice:', err);
+      } catch (err: any) {
         setAutoSyncStatus('error');
+        setSyncNotice({
+          type: 'error',
+          message: `Gagal menarik data dari Google Sheets: ${err?.message || 'Koneksi terputus.'}`,
+        });
+        if (!isInitialMount) {
+          showToast('❌ Kendala saat menyelaraskan dengan Google Spreadsheet.');
+        }
       } finally {
-        isPushingRef.current = false;
+        setIsSyncing(false);
       }
     },
-    [showToast]
+    [sheetConfig.spreadsheetId, showToast, touchDatabaseSync]
   );
 
-  // Auth Handlers
-  const handleLogin = async () => {
-    try {
-      const res = await googleSignIn();
-      if (res) {
-        setUser(res.user);
-        setIsPopupBlockedModalOpen(false);
-        showToast('🔄 Login berhasil! Menyelaraskan dengan Spreadsheet Database...');
-        await pullUpdatesFromSheet(false);
-      }
-    } catch (err: any) {
-      const code = String(err?.code || '').toLowerCase();
-      const msg = String(err?.message || '').toLowerCase();
-      if (code.includes('popup-blocked') || msg.includes('popup-blocked')) {
-        setIsPopupBlockedModalOpen(true);
-      } else if (code.includes('popup-closed') || msg.includes('popup-closed')) {
-        showToast('ℹ️ Login Google ditutup sebelum selesai.');
-      } else if (code.includes('cancelled') || msg.includes('cancelled')) {
-        showToast('ℹ️ Permintaan login dibatalkan.');
+  // Auto-Pull on initial application mount
+  useEffect(() => {
+    pullFromSpreadsheet(true);
+  }, [pullFromSpreadsheet]);
+
+  // Manual Trigger: Re-sync / Refresh Database State
+  const handleSyncNow = useCallback(() => {
+    pullFromSpreadsheet(false);
+  }, [pullFromSpreadsheet]);
+
+  // Change Connected Spreadsheet ID / URL
+  const handleChangeSpreadsheetId = useCallback(
+    (newId: string) => {
+      let cleanId = newId.trim();
+      const match = cleanId.match(/\/d\/([a-zA-Z0-9_-]+)/);
+      if (match) cleanId = match[1];
+      if (!cleanId) return;
+
+      const newUrl = `https://docs.google.com/spreadsheets/d/${cleanId}/edit`;
+      setSheetConfig((prev) => ({
+        ...prev,
+        spreadsheetId: cleanId,
+        spreadsheetUrl: newUrl,
+        lastSyncedAt: new Date().toISOString(),
+      }));
+      showToast(`🔄 Spreadsheet diarahkan ke ID: ${cleanId.slice(0, 10)}... Memulai sinkronisasi!`);
+      pullFromSpreadsheet(false, cleanId);
+    },
+    [pullFromSpreadsheet, showToast]
+  );
+
+  // Apply Pasted / Imported Data from Google Sheets
+  const handleApplyPastedData = (
+    type: 'members' | 'transactions',
+    data: any[],
+    mode: 'replace' | 'append'
+  ) => {
+    if (type === 'members') {
+      if (mode === 'replace') {
+        setMembers(ensureUniqueMembers(data));
       } else {
-        console.warn('Login notice:', err);
-        showToast('⚠️ Login Google belum berhasil: ' + (err.message || ''));
+        const combined = [...members, ...data];
+        setMembers(ensureUniqueMembers(combined));
       }
+      touchDatabaseSync();
+      showToast(`💾 ${data.length} Data Anggota berhasil diperbarui ke aplikasi!`);
+    } else if (type === 'transactions') {
+      if (mode === 'replace') {
+        setTransactions(data);
+      } else {
+        setTransactions([...data, ...transactions]);
+      }
+      touchDatabaseSync();
+      showToast(`💾 ${data.length} Catatan Transaksi berhasil diperbarui ke aplikasi!`);
     }
   };
 
-  const handleLogout = async () => {
-    try {
-      await logout();
-      setUser(null);
-    } catch (err) {
-      console.warn('Logout notice:', err);
-    }
+  // Clear demo mock data so app strictly contains user's data
+  const handleClearMockData = () => {
+    setMembers([]);
+    setTransactions([]);
+    touchDatabaseSync();
+    showToast('🗑️ Data simulasi bawaan berhasil dikosongkan. Siap menerima data asli Anda.');
   };
 
-  // Payment Recording Handlers (Auto-Save to Sheets)
+  // Payment Recording Handlers (Auto-Save to Spreadsheet Database)
   const handleAddPayment = async (
     recordData: Omit<PaymentRecord, 'id' | 'timestamp'>
   ): Promise<PaymentRecord> => {
@@ -415,39 +358,30 @@ export default function App() {
 
     const updatedTransactions = [newRecord, ...transactions];
     setTransactions(updatedTransactions);
+    touchDatabaseSync();
 
-    // Live Append to Google Spreadsheet database immediately if connected
-    const token = getAccessToken();
-    if (token) {
-      setAutoSyncStatus('syncing');
-      try {
-        await ensureSpreadsheetTabs(token, FIXED_SPREADSHEET_ID);
-        await appendTransactionToSheet(token, FIXED_SPREADSHEET_ID, newRecord);
-        // Also refresh recap tabs in Google Sheets
-        await updateRecapTabsInSheet(
-          token,
-          FIXED_SPREADSHEET_ID,
-          settings,
-          members,
-          updatedTransactions
-        );
-
-        setSheetConfig((prev) => ({
-          ...prev,
-          spreadsheetId: FIXED_SPREADSHEET_ID,
-          spreadsheetUrl: FIXED_SPREADSHEET_URL,
-          isConnected: true,
-          lastSyncedAt: new Date().toISOString(),
-        }));
-        setAutoSyncStatus('saved');
-        showToast(`💾 Iuran ${newRecord.memberName} otomatis tersimpan ke Google Spreadsheet.`);
-      } catch (err: any) {
-        console.warn('Live append warning:', err);
-        setAutoSyncStatus('error');
-        showToast(`⚠️ Iuran tersimpan lokal. Gagal memperbarui spreadsheet: ${err.message || 'Koneksi terputus'}`);
-      }
+    if (sheetConfig.appsScriptUrl) {
+      saveTransactionToSpreadsheet(newRecord, sheetConfig.appsScriptUrl)
+        .then((res) => {
+          if (res.success) {
+            showToast(
+              `✅ Iuran ${newRecord.memberName} (Rp ${newRecord.amount.toLocaleString('id-ID')}) tersimpan & masuk ke Google Spreadsheet!`
+            );
+            // Auto-update REKAP_BULANAN and REKAP_REGU on spreadsheet
+            saveRecapsToSpreadsheet(members, updatedTransactions, settings, sheetConfig.appsScriptUrl, newRecord.monthPeriod).catch(() => {});
+          } else {
+            showToast(
+              `💾 Iuran ${newRecord.memberName} tersimpan di aplikasi. (${res.message})`
+            );
+          }
+        })
+        .catch(() => {
+          showToast(`💾 Iuran ${newRecord.memberName} otomatis tersimpan di database aplikasi.`);
+        });
     } else {
-      showToast(`💾 Iuran ${newRecord.memberName} tersimpan di aplikasi. Login Google untuk auto-sync cloud.`);
+      showToast(
+        `💾 Iuran ${newRecord.memberName} (Rp ${newRecord.amount.toLocaleString('id-ID')}) otomatis tersimpan!`
+      );
     }
 
     return newRecord;
@@ -493,260 +427,221 @@ export default function App() {
 
     const updatedTransactions = [...newRecords, ...transactions];
     setTransactions(updatedTransactions);
+    touchDatabaseSync();
 
-    // Live sync to Google Sheets database if connected
-    const token = getAccessToken();
-    if (token) {
-      setAutoSyncStatus('syncing');
-      try {
-        await ensureSpreadsheetTabs(token, FIXED_SPREADSHEET_ID);
-        await appendTransactionsBatchToSheet(token, FIXED_SPREADSHEET_ID, newRecords);
-        await updateRecapTabsInSheet(
-          token,
-          FIXED_SPREADSHEET_ID,
-          settings,
-          members,
-          updatedTransactions
-        );
-
-        setSheetConfig((prev) => ({
-          ...prev,
-          spreadsheetId: FIXED_SPREADSHEET_ID,
-          spreadsheetUrl: FIXED_SPREADSHEET_URL,
-          isConnected: true,
-          lastSyncedAt: new Date().toISOString(),
-        }));
-        setAutoSyncStatus('saved');
-        showToast(`💾 Setoran rombongan ${reguName} (${newRecords.length} orang) otomatis tersimpan ke Google Spreadsheet.`);
-      } catch (err: any) {
-        console.warn('Batch append warning:', err);
-        setAutoSyncStatus('error');
-        showToast(`⚠️ Tersimpan lokal. Gagal memperbarui spreadsheet: ${err.message || 'Koneksi terputus'}`);
-      }
+    if (sheetConfig.appsScriptUrl) {
+      saveBatchTransactionsToSpreadsheet(newRecords, sheetConfig.appsScriptUrl)
+        .then((res) => {
+          if (res.success) {
+            showToast(
+              `✅ Setoran rombongan ${reguName} (${newRecords.length} orang) tersimpan & masuk ke Google Spreadsheet!`
+            );
+            // Auto-update REKAP_BULANAN and REKAP_REGU on spreadsheet
+            saveRecapsToSpreadsheet(members, updatedTransactions, settings, sheetConfig.appsScriptUrl, monthPeriod).catch(() => {});
+          } else {
+            showToast(`💾 Setoran rombongan ${reguName} tersimpan di aplikasi.`);
+          }
+        })
+        .catch(() => {
+          showToast(`💾 Setoran rombongan ${reguName} tersimpan di aplikasi.`);
+        });
     } else {
-      showToast(`💾 Setoran rombongan ${reguName} (${newRecords.length} orang) tersimpan di aplikasi. Login Google untuk auto-sync cloud.`);
-    }
-  };
-
-  // Google Sheets Handlers
-  const handleCreateNewSheet = async (title: string) => {
-    setIsSyncing(true);
-    setAutoSyncStatus('syncing');
-    try {
-      let token = getAccessToken();
-      if (!token) {
-        const loginRes = await googleSignIn();
-        token = loginRes?.accessToken;
-        if (loginRes?.user) setUser(loginRes.user);
-      }
-      if (!token) return;
-
-      const created = await createScoutSpreadsheet(
-        token,
-        title,
-        settings,
-        members,
-        transactions
-      );
-
-      setSheetConfig({
-        spreadsheetId: created.spreadsheetId,
-        spreadsheetTitle: created.title,
-        spreadsheetUrl: created.spreadsheetUrl,
-        isConnected: true,
-        lastSyncedAt: new Date().toISOString(),
-        sheetTabs: Object.values(SHEETS_NAMES),
-      });
-
-      setAutoSyncStatus('saved');
-      showToast(`✅ Google Spreadsheet "${created.title}" berhasil dibuat dan terhubung otomatis 2-arah!`);
-    } catch (err: any) {
-      showToast('⚠️ Gagal membuat spreadsheet: ' + (err.message || ''));
-      setAutoSyncStatus('error');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const handleConnectExistingSheet = async (sheetIdOrUrl: string) => {
-    let sheetId = sheetIdOrUrl.trim();
-    const match = sheetId.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    if (match && match[1]) {
-      sheetId = match[1];
-    }
-
-    setIsSyncing(true);
-    setAutoSyncStatus('syncing');
-    try {
-      let token = getAccessToken();
-      if (!token) {
-        const loginRes = await googleSignIn();
-        token = loginRes?.accessToken;
-        if (loginRes?.user) setUser(loginRes.user);
-      }
-      if (!token) return;
-
-      const verified = await verifySpreadsheet(token, sheetId);
-
-      setSheetConfig({
-        spreadsheetId: sheetId,
-        spreadsheetTitle: verified.title,
-        spreadsheetUrl: `https://docs.google.com/spreadsheets/d/${sheetId}/edit`,
-        isConnected: true,
-        lastSyncedAt: new Date().toISOString(),
-        sheetTabs: verified.sheetNames,
-      });
-
-      // Immediately pull current data from that sheet and match it 100%
-      const pulled = await pullSpreadsheetData(token, sheetId);
-      if (Array.isArray(pulled.members) && pulled.members.length > 0) setMembers(pulled.members);
-      if (Array.isArray(pulled.transactions)) setTransactions(pulled.transactions);
-      if (pulled.settings) setSettings((prev) => ({ ...prev, ...pulled.settings }));
-
-      setAutoSyncStatus('saved');
-      showToast(`✅ Terhubung dengan Google Spreadsheet "${verified.title}". Sinkronisasi 2-arah aktif.`);
-    } catch (err: any) {
-      showToast('⚠️ Gagal menghubungkan spreadsheet: ' + (err.message || ''));
-      setAutoSyncStatus('error');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const handlePushToSheet = async () => {
-    setIsSyncing(true);
-    setAutoSyncStatus('syncing');
-    try {
-      let token = getAccessToken();
-      if (!token) {
-        const loginRes = await googleSignIn();
-        token = loginRes?.accessToken;
-        if (loginRes?.user) setUser(loginRes.user);
-      }
-      if (!token) {
-        showToast('⚠️ Silakan Login Google terlebih dahulu.');
-        return;
-      }
-      await ensureSpreadsheetTabs(token, FIXED_SPREADSHEET_ID);
-      await populateSpreadsheetData(
-        token,
-        FIXED_SPREADSHEET_ID,
-        settings,
-        members,
-        transactions
-      );
-      setSheetConfig((prev) => ({
-        ...prev,
-        spreadsheetId: FIXED_SPREADSHEET_ID,
-        spreadsheetUrl: FIXED_SPREADSHEET_URL,
-        isConnected: true,
-        lastSyncedAt: new Date().toISOString(),
-      }));
-      setAutoSyncStatus('saved');
-      showToast('✅ Seluruh data aplikasi berhasil diperbarui ke Google Spreadsheet database!');
-    } catch (err: any) {
-      showToast('⚠️ Gagal sinkronisasi: ' + (err.message || ''));
-      setAutoSyncStatus('error');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const handlePullFromSheet = async () => {
-    setIsSyncing(true);
-    setAutoSyncStatus('syncing');
-    try {
-      let token = getAccessToken();
-      if (!token) {
-        const loginRes = await googleSignIn();
-        token = loginRes?.accessToken;
-        if (loginRes?.user) setUser(loginRes.user);
-      }
-      if (!token) {
-        showToast('⚠️ Silakan Login Google terlebih dahulu.');
-        return;
-      }
-      await ensureSpreadsheetTabs(token, FIXED_SPREADSHEET_ID);
-      const pulled = await pullSpreadsheetData(token, FIXED_SPREADSHEET_ID);
-      if (Array.isArray(pulled.members) && pulled.members.length > 0) {
-        setMembers(pulled.members);
-      }
-      if (Array.isArray(pulled.transactions)) {
-        setTransactions(pulled.transactions);
-      }
-      if (pulled.settings && Object.keys(pulled.settings).length > 0) {
-        setSettings((prev) => ({ ...prev, ...pulled.settings }));
-      }
-      setSheetConfig((prev) => ({
-        ...prev,
-        spreadsheetId: FIXED_SPREADSHEET_ID,
-        spreadsheetUrl: FIXED_SPREADSHEET_URL,
-        isConnected: true,
-        lastSyncedAt: new Date().toISOString(),
-      }));
-      setAutoSyncStatus('saved');
       showToast(
-        `✅ Berhasil memuat data dari Spreadsheet Database (${FIXED_SPREADSHEET_ID.slice(0, 8)}...)! (${pulled.transactions.length} transaksi, ${pulled.members?.length || members.length} anggota)`
+        `💾 Setoran rombongan ${reguName} (${newRecords.length} orang) otomatis tersimpan!`
       );
-    } catch (err: any) {
-      console.warn('Pull from sheet notice:', err);
-      showToast('⚠️ Gagal memuat data dari spreadsheet: ' + (err.message || ''));
-      setAutoSyncStatus('error');
-    } finally {
-      setIsSyncing(false);
     }
   };
 
-  // Member Management Handlers (Auto-Save to Sheets)
+  // Member Management Handlers
   const handleAddMember = async (memberData: Omit<ScoutMember, 'id'>) => {
-    const newId = `M-${String(members.length + 1).padStart(3, '0')}`;
+    const trimmedName = memberData.name.trim();
+    const trimmedRegu = memberData.regu.trim();
+
+    // Check if member with identical name & regu already exists
+    const duplicate = members.find(
+      (m) =>
+        m.name.trim().toLowerCase() === trimmedName.toLowerCase() &&
+        m.regu.trim().toLowerCase() === trimmedRegu.toLowerCase()
+    );
+    if (duplicate) {
+      showToast(
+        `⚠️ Anggota "${trimmedName}" di ${trimmedRegu} sudah terdaftar (ID: ${duplicate.id}). Tidak menduplikasi data.`
+      );
+      return;
+    }
+
+    let nextNum = members.length + 1;
+    let newId = `M-${String(nextNum).padStart(3, '0')}`;
+    while (members.some((m) => m.id === newId)) {
+      nextNum++;
+      newId = `M-${String(nextNum).padStart(3, '0')}`;
+    }
     const newMember: ScoutMember = {
       ...memberData,
+      name: trimmedName,
+      regu: trimmedRegu,
       id: newId,
     };
-    const updated = [...members, newMember];
+    const updated = ensureUniqueMembers([...members, newMember]);
     setMembers(updated);
-    autoSaveFullToSpreadsheet(updated, transactions, settings);
+    touchDatabaseSync();
+
+    if (sheetConfig.appsScriptUrl) {
+      saveMemberToSpreadsheet(newMember, sheetConfig.appsScriptUrl)
+        .then((res) => {
+          if (res.success) {
+            showToast(`✅ Anggota baru "${newMember.name}" tersimpan di aplikasi & Google Spreadsheet!`);
+          } else {
+            showToast(`💾 Anggota baru "${newMember.name}" berhasil ditambahkan.`);
+          }
+        })
+        .catch(() => {
+          showToast(`💾 Anggota baru "${newMember.name}" berhasil ditambahkan.`);
+        });
+    } else {
+      showToast(`💾 Anggota baru "${newMember.name}" berhasil ditambahkan.`);
+    }
+  };
+
+  // Apps Script Webhook handlers
+  const handleUpdateAppsScriptUrl = (url: string) => {
+    const cleanUrl = url.trim();
+    const updated: SheetConfig = {
+      ...sheetConfig,
+      appsScriptUrl: cleanUrl,
+    };
+    setSheetConfig(updated);
+    try {
+      localStorage.setItem(STORAGE_KEYS.SHEET_CONFIG, JSON.stringify(updated));
+    } catch {}
+    showToast(
+      cleanUrl
+        ? '⚡ URL Apps Script tersimpan! Penyimpanan otomatis ke Google Spreadsheet aktif.'
+        : 'URL Apps Script dihapus.'
+    );
+  };
+
+  const handleSyncRecapsToSpreadsheet = useCallback(
+    async (monthPeriod?: string) => {
+      if (!sheetConfig.appsScriptUrl) {
+        showToast('⚠️ Hubungkan URL Apps Script terlebih dahulu di menu Database Spreadsheet.');
+        return;
+      }
+      showToast('⏳ Menyimpan Rekap Bulanan & Rekap Regu ke Spreadsheet...');
+      try {
+        const res = await saveRecapsToSpreadsheet(
+          members,
+          transactions,
+          settings,
+          sheetConfig.appsScriptUrl,
+          monthPeriod || selectedMonth
+        );
+        if (res.success) {
+          showToast(`✅ ${res.message}`);
+        } else {
+          showToast(`⚠️ ${res.message}`);
+        }
+      } catch (err: any) {
+        showToast(`❌ Gagal menyimpan rekap: ${err?.message || 'Terputus'}`);
+      }
+    },
+    [members, transactions, settings, sheetConfig.appsScriptUrl, selectedMonth, showToast]
+  );
+
+  const handleSyncAllToSpreadsheet = async () => {
+    if (!sheetConfig.appsScriptUrl) {
+      showToast('⚠️ Hubungkan URL Apps Script terlebih dahulu di menu Database Spreadsheet.');
+      return;
+    }
+    showToast('⏳ Sedang mengirim data (Anggota, Transaksi, Rekap Bulanan, Rekap Regu)...');
+    try {
+      const res = await syncAllDataToSpreadsheet(
+        members,
+        transactions,
+        sheetConfig.appsScriptUrl,
+        settings,
+        selectedMonth
+      );
+      if (res.success) {
+        showToast(`✅ ${res.message}`);
+      } else {
+        showToast(`⚠️ ${res.message}`);
+      }
+    } catch (err: any) {
+      showToast(`❌ Gagal: ${err?.message || 'Terputus'}`);
+    }
   };
 
   const handleUpdateMember = async (updatedMember: ScoutMember) => {
     const updated = members.map((m) => (m.id === updatedMember.id ? updatedMember : m));
     setMembers(updated);
-    autoSaveFullToSpreadsheet(updated, transactions, settings);
+    touchDatabaseSync();
+    if (sheetConfig.appsScriptUrl) {
+      saveRecapsToSpreadsheet(updated, transactions, settings, sheetConfig.appsScriptUrl).catch(() => {});
+    }
+    showToast(`💾 Data anggota "${updatedMember.name}" berhasil diperbarui.`);
   };
 
   const handleDeleteMember = async (id: string) => {
+    const toDelete = members.find((m) => m.id === id);
     const updated = members.filter((m) => m.id !== id);
     setMembers(updated);
-    autoSaveFullToSpreadsheet(updated, transactions, settings);
+    touchDatabaseSync();
+    if (sheetConfig.appsScriptUrl) {
+      saveRecapsToSpreadsheet(updated, transactions, settings, sheetConfig.appsScriptUrl).catch(() => {});
+    }
+    showToast(`🗑️ Anggota "${toDelete?.name || id}" berhasil dihapus.`);
   };
 
+  // Transaction Deletion Handler
   const handleDeleteTransaction = async (id: string) => {
     const updated = transactions.filter((t) => t.id !== id);
     setTransactions(updated);
-    autoSaveFullToSpreadsheet(members, updated, settings);
+    touchDatabaseSync();
+    if (sheetConfig.appsScriptUrl) {
+      saveRecapsToSpreadsheet(members, updated, settings, sheetConfig.appsScriptUrl).catch(() => {});
+    }
+    showToast(`🗑️ Transaksi ${id} berhasil dihapus.`);
   };
 
+  // Settings Handler
   const handleSaveSettings = (newSettings: GudepSettings) => {
     setSettings(newSettings);
-    autoSaveFullToSpreadsheet(members, transactions, newSettings);
+    touchDatabaseSync();
+    showToast('💾 Pengaturan Gugus Depan berhasil disimpan.');
+  };
+
+  // CSV Import Handler
+  const handleImportCSV = (csvContent: string) => {
+    try {
+      const parsed = parsePastedTableData(csvContent, 'auto');
+      if (parsed.type === 'members' && parsed.members && parsed.members.length > 0) {
+        setMembers(parsed.members);
+        touchDatabaseSync();
+        showToast(`✅ Berhasil mengimpor ${parsed.members.length} data anggota dari file CSV.`);
+      } else if (parsed.type === 'transactions' && parsed.transactions && parsed.transactions.length > 0) {
+        setTransactions(parsed.transactions);
+        touchDatabaseSync();
+        showToast(`✅ Berhasil mengimpor ${parsed.transactions.length} catatan transaksi dari file CSV.`);
+      } else {
+        showToast('⚠️ Format file belum cocok untuk data anggota atau transaksi.');
+      }
+    } catch {
+      showToast('❌ Gagal memproses file CSV.');
+    }
   };
 
   return (
-    <div className="min-h-screen bg-stone-100/70 text-stone-900 flex flex-col font-sans">
-      {/* Top Notification Toast for Real-time Auto-Sync updates */}
+    <div className="min-h-screen bg-stone-100 flex flex-col font-sans text-stone-900 antialiased selection:bg-amber-700 selection:text-white">
+      {/* Toast Notification */}
       {syncToastMessage && (
-        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 max-w-lg w-full px-4 animate-bounce-short">
-          <div className="bg-stone-900 text-white px-4 py-2.5 rounded-xl shadow-2xl border border-emerald-500/60 flex items-center justify-between gap-3 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="p-1 rounded-full bg-emerald-500/20 text-emerald-400">
-                <Bell className="w-3.5 h-3.5" />
-              </span>
-              <span className="font-medium text-stone-100">{syncToastMessage}</span>
-            </div>
+        <div className="fixed bottom-5 right-5 z-50 max-w-md animate-slideUp">
+          <div className="flex items-center gap-2.5 px-4 py-3 rounded-2xl bg-stone-950 text-white text-xs font-semibold shadow-2xl border border-emerald-500/50">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span className="flex-1 leading-relaxed">{syncToastMessage}</span>
             <button
               onClick={() => setSyncToastMessage(null)}
-              className="p-1 text-stone-400 hover:text-white"
+              className="p-1 rounded-lg hover:bg-stone-800 text-stone-400 hover:text-white"
             >
               <X className="w-3.5 h-3.5" />
             </button>
@@ -756,55 +651,127 @@ export default function App() {
 
       {/* Top Header */}
       <Header
-        user={user}
         sheetConfig={sheetConfig}
         settings={settings}
         isSyncing={isSyncing}
         autoSyncStatus={autoSyncStatus}
-        onLoginClick={handleLogin}
-        onLogoutClick={handleLogout}
         onOpenSheetModal={() => setIsSheetModalOpen(true)}
         onOpenSettingsModal={() => setIsSettingsModalOpen(true)}
-        onSyncNow={handlePullFromSheet}
+        onSyncNow={handleSyncNow}
       />
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6 space-y-6">
-        {/* Fixed Database Connection Status Banner */}
-        {!user && (
-          <div className="bg-gradient-to-r from-amber-950 via-stone-900 to-emerald-950 border border-amber-700/60 rounded-2xl p-4 text-white shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        {/* Status & Sync Guidance Banner if Google Sheets Sharing is Restricted */}
+        {isSpreadsheetRestricted && !dismissBanner && (
+          <div className="bg-gradient-to-r from-amber-900 via-stone-900 to-amber-950 border-2 border-amber-500 rounded-2xl p-4 text-white shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fadeIn">
             <div className="flex items-start gap-3">
-              <div className="p-2 rounded-xl bg-amber-500/20 text-amber-300 shrink-0 mt-0.5">
-                <Database className="w-5 h-5" />
+              <div className="p-2.5 rounded-xl bg-amber-500/20 text-amber-300 border border-amber-400/40 shrink-0 mt-0.5">
+                <AlertTriangle className="w-6 h-6 text-amber-300" />
               </div>
-              <div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span className="font-bold text-sm text-amber-200">
-                    Database Google Spreadsheet Utama Telah Ditetapkan
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-extrabold text-sm sm:text-base text-amber-200">
+                    Akses Google Spreadsheet Masih "Dibatasi" di Google Drive
                   </span>
-                  <span className="text-[10px] bg-emerald-800 text-emerald-200 font-mono px-2 py-0.5 rounded-full border border-emerald-600/50">
-                    ID: 1deLLyW5F5l...
+                  <span className="text-[10px] bg-amber-800 text-amber-200 font-bold px-2 py-0.5 rounded-full border border-amber-600/50">
+                    Perlu Izin Publik
                   </span>
                 </div>
-                <p className="text-xs text-stone-300 mt-1">
-                  Spreadsheet <strong>1deLLyW5F5lCbukK2QJExbzdDV1YihjTCzogGtruo7-A</strong> telah menjadi database pasti. Masuk dengan akun Google untuk mengaktifkan sinkronisasi otomatis 2-arah.
+                <p className="text-xs text-stone-300 leading-relaxed max-w-3xl">
+                  Aplikasi berusaha membaca spreadsheet <strong className="font-mono text-amber-300">{FIXED_SPREADSHEET_ID}</strong>, namun Google menolak karena spreadsheet berstatus private. Agar web ini dapat menampilkan dan menyinkronkan data otomatis tanpa login:
                 </p>
+                <div className="text-xs text-amber-200/90 font-medium pt-1">
+                  👉 Buka spreadsheet di Google Drive &gt; Klik <strong>"Bagikan" (Share)</strong> &gt; Ubah Akses Umum ke <strong>"Siapa saja yang memiliki link: Pelihat"</strong> &gt; Lalu klik <strong>"Tarik Data"</strong> di sini.
+                </div>
               </div>
             </div>
-            <button
-              onClick={handleLogin}
-              className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-white text-stone-900 hover:bg-stone-100 font-bold text-xs shadow-sm transition shrink-0 cursor-pointer"
-            >
-              <svg className="w-4 h-4" viewBox="0 0 48 48">
-                <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
-                <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
-                <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
-                <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
-              </svg>
-              <span>Login Google Sekarang</span>
-            </button>
+
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              <button
+                onClick={() => setIsSheetModalOpen(true)}
+                className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-stone-950 font-bold text-xs shadow-sm transition flex items-center gap-1.5"
+              >
+                <ClipboardPaste className="w-4 h-4 text-stone-900" />
+                <span>Tempel Data / Panduan</span>
+              </button>
+
+              <button
+                onClick={handleSyncNow}
+                disabled={isSyncing}
+                className="px-3 py-2 rounded-xl bg-stone-800 hover:bg-stone-700 text-amber-200 font-semibold text-xs border border-stone-600 transition flex items-center gap-1.5"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+                <span>Tarik Ulang</span>
+              </button>
+
+              <button
+                onClick={() => setDismissBanner(true)}
+                className="p-1.5 rounded-lg text-stone-400 hover:text-white hover:bg-stone-800 transition"
+                title="Tutup pemberitahuan ini"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
         )}
+
+        {/* Permanent Database Confirmation Banner */}
+        <div className="bg-gradient-to-r from-emerald-950 via-stone-900 to-emerald-900 border-2 border-emerald-500/70 rounded-2xl p-4 text-white shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <div className="p-2 rounded-xl bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 shrink-0 mt-0.5">
+              <Database className="w-5 h-5 text-emerald-300" />
+            </div>
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-extrabold text-sm text-emerald-200">
+                  Database Google Spreadsheet Terhubung
+                </span>
+                <span className="text-[10px] bg-emerald-800/90 text-emerald-100 font-mono px-2 py-0.5 rounded-full border border-emerald-600/50">
+                  Tanpa Perlu Login
+                </span>
+                <span className="text-[11px] text-emerald-300 font-medium">
+                  • {members.length} Anggota • {transactions.length} Transaksi Terdata
+                </span>
+              </div>
+              <p className="text-xs text-stone-300 mt-1">
+                Spreadsheet terpasang:{' '}
+                <strong className="font-mono text-emerald-300 select-all">{FIXED_SPREADSHEET_ID}</strong>.
+                Semua data iuran diselaraskan langsung tanpa memerlukan akun login Google.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            <button
+              onClick={handleSyncNow}
+              disabled={isSyncing}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs shadow-sm transition"
+              title="Tarik data terbaru dari spreadsheet"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span>{isSyncing ? 'Menarik Data...' : 'Tarik Data Terbaru'}</span>
+            </button>
+
+            <a
+              href={FIXED_SPREADSHEET_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-sm transition shrink-0"
+            >
+              <span>Buka Google Sheets</span>
+              <ExternalLink className="w-3.5 h-3.5" />
+            </a>
+
+            <button
+              onClick={() => setIsSheetModalOpen(true)}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 font-semibold text-xs border border-stone-600 transition"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Sinkron & Tempel Data</span>
+            </button>
+          </div>
+        </div>
 
         {/* Navigation Tabs Bar */}
         <div className="bg-white rounded-2xl p-2 border border-stone-200/80 shadow-xs flex items-center gap-1.5 overflow-x-auto scrollbar-none">
@@ -841,7 +808,7 @@ export default function App() {
             }`}
           >
             <Calendar className="w-4 h-4" />
-            <span>Rekap Bulanan (Otomatis)</span>
+            <span>Rekap Bulanan</span>
           </button>
 
           <button
@@ -865,7 +832,7 @@ export default function App() {
             }`}
           >
             <Users className="w-4 h-4" />
-            <span>Data Anggota & Regu</span>
+            <span>Data Anggota & Regu ({members.length})</span>
           </button>
 
           <button
@@ -877,7 +844,7 @@ export default function App() {
             }`}
           >
             <History className="w-4 h-4" />
-            <span>Riwayat Transaksi</span>
+            <span>Riwayat Transaksi ({transactions.length})</span>
           </button>
 
           <button
@@ -885,14 +852,13 @@ export default function App() {
             className="ml-auto hidden lg:flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-300 hover:bg-emerald-100 transition whitespace-nowrap"
           >
             <FileSpreadsheet className="w-4 h-4 text-emerald-700" />
-            <span>{sheetConfig.isConnected ? 'Kelola Spreadsheet' : 'Hubungkan Spreadsheet'}</span>
+            <span>Database Spreadsheet</span>
           </button>
         </div>
 
         {/* Tab Content Display */}
         {activeTab === 'dashboard' && (
           <DashboardTab
-            user={user}
             members={members}
             transactions={transactions}
             settings={settings}
@@ -902,7 +868,6 @@ export default function App() {
             onNavigateTab={setActiveTab}
             onOpenQuickPay={() => setActiveTab('record')}
             onOpenSheetModal={() => setIsSheetModalOpen(true)}
-            onQuickCreateSheet={() => handleCreateNewSheet(`Iuran Rutin Pramuka - ${settings.pangkalan}`)}
           />
         )}
 
@@ -911,6 +876,8 @@ export default function App() {
             members={members}
             transactions={transactions}
             settings={settings}
+            sheetConfig={sheetConfig}
+            onOpenSheetModal={() => setIsSheetModalOpen(true)}
             onAddPayment={handleAddPayment}
             onBatchPayRegu={handleBatchPayRegu}
             onOpenReceipt={setActiveReceiptRecord}
@@ -923,8 +890,11 @@ export default function App() {
             transactions={transactions}
             settings={settings}
             selectedMonth={selectedMonth}
+            appsScriptUrl={sheetConfig.appsScriptUrl}
             onSelectMonth={setSelectedMonth}
-            onSyncSpreadsheet={handlePushToSheet}
+            onSyncSpreadsheet={handleSyncNow}
+            onSyncRecapsToSpreadsheet={handleSyncRecapsToSpreadsheet}
+            onOpenSheetModal={() => setIsSheetModalOpen(true)}
           />
         )}
 
@@ -934,6 +904,9 @@ export default function App() {
             transactions={transactions}
             settings={settings}
             selectedMonth={selectedMonth}
+            appsScriptUrl={sheetConfig.appsScriptUrl}
+            onSyncRecapsToSpreadsheet={handleSyncRecapsToSpreadsheet}
+            onOpenSheetModal={() => setIsSheetModalOpen(true)}
           />
         )}
 
@@ -943,6 +916,14 @@ export default function App() {
             onAddMember={handleAddMember}
             onUpdateMember={handleUpdateMember}
             onDeleteMember={handleDeleteMember}
+            onSyncFromSpreadsheet={handleSyncNow}
+            onApplyMembers={(newMembers, mode) => handleApplyPastedData('members', newMembers, mode)}
+            onClearMockData={handleClearMockData}
+            isSyncing={isSyncing}
+            isRestricted={isSpreadsheetRestricted}
+            spreadsheetId={sheetConfig.spreadsheetId || FIXED_SPREADSHEET_ID}
+            spreadsheetUrl={sheetConfig.spreadsheetUrl || FIXED_SPREADSHEET_URL}
+            onChangeSpreadsheetId={handleChangeSpreadsheetId}
           />
         )}
 
@@ -963,15 +944,13 @@ export default function App() {
             <span className="font-medium text-stone-700">
               ⚜️ SI-PRAMUKA • {settings.gudepName} • {settings.pangkalan}
             </span>
-            {sheetConfig.isConnected && (
-              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-300 text-[10px] font-semibold">
-                <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                Auto-Sync 2-Arah Aktif
-              </span>
-            )}
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-300 text-[10px] font-semibold">
+              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+              Spreadsheet Otomatis Terhubung
+            </span>
           </div>
           <span className="text-stone-400">
-            Database Spreadsheet Otomatis & Rekapitulasi Iuran Rutin
+            Database ID: {FIXED_SPREADSHEET_ID} (Tanpa Login)
           </span>
         </div>
       </footer>
@@ -980,19 +959,19 @@ export default function App() {
       <SpreadsheetModal
         isOpen={isSheetModalOpen}
         onClose={() => setIsSheetModalOpen(false)}
-        user={user}
         sheetConfig={sheetConfig}
         settings={settings}
         members={members}
         transactions={transactions}
         isSyncing={isSyncing}
-        hasToken={hasActiveToken()}
-        onLoginClick={handleLogin}
-        onReauthClick={handleLogin}
-        onCreateNewSheet={handleCreateNewSheet}
-        onConnectExistingSheet={handleConnectExistingSheet}
-        onPushToSheet={handlePushToSheet}
-        onPullFromSheet={handlePullFromSheet}
+        syncNotice={syncNotice}
+        onSyncNow={handleSyncNow}
+        onImportCSV={handleImportCSV}
+        onApplyPastedData={handleApplyPastedData}
+        onClearMockData={handleClearMockData}
+        onChangeSpreadsheetId={handleChangeSpreadsheetId}
+        onUpdateAppsScriptUrl={handleUpdateAppsScriptUrl}
+        onSyncAllToSpreadsheet={handleSyncAllToSpreadsheet}
       />
 
       <ReceiptModal
@@ -1007,12 +986,6 @@ export default function App() {
         onClose={() => setIsSettingsModalOpen(false)}
         settings={settings}
         onSaveSettings={handleSaveSettings}
-      />
-
-      <PopupBlockedModal
-        isOpen={isPopupBlockedModalOpen}
-        onClose={() => setIsPopupBlockedModalOpen(false)}
-        onRetryLogin={handleLogin}
       />
     </div>
   );

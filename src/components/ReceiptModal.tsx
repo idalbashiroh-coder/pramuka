@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Printer, Share2, Copy, Check, Download, ShieldCheck } from 'lucide-react';
+import { X, Printer, Share2, Copy, Check, Download, ShieldCheck, FileSpreadsheet } from 'lucide-react';
 import { GudepSettings, PaymentRecord } from '../types/scout';
 import { formatRupiah, formatTanggalIndo, formatBulanIndo, terbilang } from '../utils/formatters';
+import { formatTransactionAsTsvRow } from '../services/sheetsService';
 import { TunasKelapaIcon, WosmIcon } from './ScoutIcons';
 
 interface ReceiptModalProps {
@@ -18,6 +19,7 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
   settings,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [copiedTsv, setCopiedTsv] = useState(false);
 
   if (!isOpen || !record) return null;
 
@@ -48,6 +50,12 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
     navigator.clipboard.writeText(generateReceiptText());
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleCopyTsv = () => {
+    navigator.clipboard.writeText(formatTransactionAsTsvRow(record));
+    setCopiedTsv(true);
+    setTimeout(() => setCopiedTsv(false), 2000);
   };
 
   return (
@@ -182,14 +190,25 @@ export const ReceiptModal: React.FC<ReceiptModalProps> = ({
         </div>
 
         {/* Modal Actions */}
-        <div className="p-4 bg-stone-50 flex items-center justify-between gap-2">
-          <button
-            onClick={handleCopyText}
-            className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1.5 transition"
-          >
-            {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-            <span>{copied ? 'Tersalin' : 'Salin Format WA'}</span>
-          </button>
+        <div className="p-4 bg-stone-50 flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleCopyText}
+              className="px-3.5 py-2 rounded-xl text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1.5 transition"
+            >
+              {copied ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{copied ? 'Tersalin' : 'Salin Format WA'}</span>
+            </button>
+
+            <button
+              onClick={handleCopyTsv}
+              className="px-3 py-2 rounded-xl text-xs font-semibold bg-stone-100 hover:bg-stone-200 text-stone-700 border border-stone-300 flex items-center gap-1.5 transition"
+              title="Salin baris ini untuk ditempelkan langsung ke lembar TRANSAKSI_IURAN Google Sheets"
+            >
+              {copiedTsv ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />}
+              <span>{copiedTsv ? 'Baris Tersalin!' : 'Salin Baris Sheets'}</span>
+            </button>
+          </div>
 
           <div className="flex items-center gap-2">
             <button

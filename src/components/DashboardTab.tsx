@@ -1,5 +1,4 @@
 import React from 'react';
-import { User } from 'firebase/auth';
 import {
   Wallet,
   TrendingUp,
@@ -21,7 +20,6 @@ import { formatRupiah, formatBulanIndo } from '../utils/formatters';
 import { TunasKelapaIcon } from './ScoutIcons';
 
 interface DashboardTabProps {
-  user: User | null;
   members: ScoutMember[];
   transactions: PaymentRecord[];
   settings: GudepSettings;
@@ -31,11 +29,9 @@ interface DashboardTabProps {
   onNavigateTab: (tabId: string) => void;
   onOpenQuickPay: () => void;
   onOpenSheetModal: () => void;
-  onQuickCreateSheet: () => void;
 }
 
 export const DashboardTab: React.FC<DashboardTabProps> = ({
-  user,
   members,
   transactions,
   settings,
@@ -45,7 +41,6 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({
   onNavigateTab,
   onOpenQuickPay,
   onOpenSheetModal,
-  onQuickCreateSheet,
 }) => {
   // Calculations
   const activeMembers = members.filter((m) => m.active);
@@ -113,47 +108,6 @@ export const DashboardTab: React.FC<DashboardTabProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Google Login Done, But Sheet Not Yet Connected Callout */}
-      {user && !sheetConfig.isConnected && (
-        <div className="bg-gradient-to-r from-emerald-950 via-stone-900 to-emerald-900 rounded-2xl p-4 sm:p-5 text-white border-2 border-emerald-500/70 shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4 animate-fadeIn">
-          <div className="flex items-start sm:items-center gap-3.5">
-            <div className="w-12 h-12 rounded-xl bg-emerald-500/20 border border-emerald-400/50 flex items-center justify-center shrink-0">
-              <FileSpreadsheet className="w-6 h-6 text-emerald-400" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-extrabold text-sm sm:text-base text-white">
-                  Akun Google Anda ({user.email}) Siap Dihubungkan!
-                </span>
-                <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/30 text-emerald-300 font-bold border border-emerald-400/30">
-                  Tinggal 1 Klik
-                </span>
-              </div>
-              <p className="text-xs text-stone-300 mt-1 leading-relaxed">
-                Anda sudah login Gmail. Klik tombol di samping untuk otomatis membuat file Google Spreadsheet di Drive Anda sehingga data iuran rutin & rekapan langsung tersimpan ke cloud.
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2 shrink-0">
-            <button
-              onClick={onQuickCreateSheet}
-              disabled={isSyncing}
-              className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-400 hover:from-emerald-400 hover:to-emerald-300 text-stone-950 font-black text-xs flex items-center justify-center gap-2 shadow-lg transition transform hover:-translate-y-0.5 active:translate-y-0 disabled:opacity-50"
-            >
-              <PlusCircle className="w-4 h-4" />
-              <span>{isSyncing ? 'Sedang Membuat di Drive...' : 'Buat Spreadsheet di Drive (1-Klik)'}</span>
-            </button>
-            <button
-              onClick={onOpenSheetModal}
-              className="px-3 py-2.5 rounded-xl bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-semibold border border-stone-600 transition"
-              title="Pilihan Lainnya"
-            >
-              Opsi
-            </button>
-          </div>
-        </div>
-      )}
-
       {/* Welcome & Quick Action Card */}
       <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-amber-900 via-amber-800 to-amber-950 p-6 text-white shadow-xl border border-amber-700/50">
         <div className="absolute right-0 top-0 translate-x-8 -translate-y-8 opacity-10 pointer-events-none">

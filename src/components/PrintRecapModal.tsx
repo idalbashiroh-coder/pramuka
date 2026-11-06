@@ -438,7 +438,7 @@ export const PrintRecapModal: React.FC<PrintRecapModalProps> = ({
                   ) : (
                     memberMatrix.map((item, index) => (
                       <tr
-                        key={item.member.id}
+                        key={`${item.member.id}-${index}`}
                         className={index % 2 === 1 ? 'bg-stone-50/70' : 'bg-white'}
                       >
                         <td className="py-1.5 px-2 text-center text-stone-500 border-r border-stone-200 font-mono text-[10px]">

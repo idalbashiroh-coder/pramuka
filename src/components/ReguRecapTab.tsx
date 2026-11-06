@@ -12,6 +12,7 @@ import {
   ChevronUp,
   Shield,
   FileSpreadsheet,
+  AlertTriangle,
 } from 'lucide-react';
 import { GudepSettings, PaymentRecord, ScoutMember } from '../types/scout';
 import { formatRupiah, formatBulanIndo } from '../utils/formatters';
@@ -22,6 +23,9 @@ interface ReguRecapTabProps {
   transactions: PaymentRecord[];
   settings: GudepSettings;
   selectedMonth: string;
+  appsScriptUrl?: string;
+  onSyncRecapsToSpreadsheet?: (monthPeriod?: string) => Promise<void>;
+  onOpenSheetModal?: () => void;
 }
 
 export const ReguRecapTab: React.FC<ReguRecapTabProps> = ({
@@ -29,9 +33,13 @@ export const ReguRecapTab: React.FC<ReguRecapTabProps> = ({
   transactions,
   settings,
   selectedMonth,
+  appsScriptUrl,
+  onSyncRecapsToSpreadsheet,
+  onOpenSheetModal,
 }) => {
   const [expandedRegu, setExpandedRegu] = useState<string | null>(null);
   const [copiedRegu, setCopiedRegu] = useState<string | null>(null);
+  const [isSavingToSheet, setIsSavingToSheet] = useState(false);
 
   // Filter transactions by month
   const monthTransactions = useMemo(
@@ -121,6 +129,29 @@ export const ReguRecapTab: React.FC<ReguRecapTabProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Apps Script Status Banner */}
+      {!appsScriptUrl && onOpenSheetModal && (
+        <div className="p-4 rounded-2xl bg-amber-50 border border-amber-300 text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0" />
+            <div>
+              <span className="font-bold text-amber-900 block">
+                Sinkronisasi Tulis ke Google Spreadsheet Belum Terhubung
+              </span>
+              <span className="text-stone-600">
+                Agar lembar <code>REKAP_REGU</code> langsung terisi di Google Spreadsheet Anda, masukkan URL Web App Google Apps Script.
+              </span>
+            </div>
+          </div>
+          <button
+            onClick={onOpenSheetModal}
+            className="px-3.5 py-2 rounded-xl bg-amber-800 hover:bg-amber-700 text-white font-bold whitespace-nowrap shadow-xs transition shrink-0"
+          >
+            Hubungkan Apps Script
+          </button>
+        </div>
+      )}
+
       {/* Header Info */}
       <div className="bg-white rounded-2xl p-5 border border-stone-200 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>
@@ -135,10 +166,26 @@ export const ReguRecapTab: React.FC<ReguRecapTabProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-xs font-semibold text-stone-600 bg-amber-50 px-3 py-1.5 rounded-xl border border-amber-200">
-            ⚜️ Total Regu: {reguSummaries.length} Regu
+            ⚜️ Total: {reguSummaries.length} Regu
           </span>
+
+          <button
+            onClick={async () => {
+              if (onSyncRecapsToSpreadsheet) {
+                setIsSavingToSheet(true);
+                await onSyncRecapsToSpreadsheet(selectedMonth);
+                setIsSavingToSheet(false);
+              }
+            }}
+            disabled={isSavingToSheet}
+            className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-amber-700 hover:bg-amber-600 disabled:opacity-50 text-white flex items-center gap-1.5 shadow-xs transition"
+            title="Simpan tabel rekap regu ke sheet REKAP_REGU di Google Spreadsheet"
+          >
+            <FileSpreadsheet className={`w-3.5 h-3.5 ${isSavingToSheet ? 'animate-spin' : ''}`} />
+            <span>{isSavingToSheet ? 'Menyimpan...' : 'Simpan Rekap ke Spreadsheet'}</span>
+          </button>
         </div>
       </div>
 
@@ -273,14 +320,14 @@ export const ReguRecapTab: React.FC<ReguRecapTabProps> = ({
                     <span className="text-[11px] font-bold text-stone-600 block">
                       Daftar Anggota {item.regu}:
                     </span>
-                    {item.members.map((m) => {
+                    {item.members.map((m, mIdx) => {
                       const mTx = monthTransactions.filter((t) => t.memberId === m.id);
                       const mPaid = mTx.reduce((s, t) => s + t.amount, 0);
                       const isLunas = mPaid >= settings.defaultFeePerMeeting * 4;
 
                       return (
                         <div
-                          key={m.id}
+                          key={`${m.id}-${mIdx}`}
                           className="flex items-center justify-between text-xs py-1 px-2 rounded-lg bg-stone-50"
                         >
                           <div className="flex items-center gap-1.5 truncate">

@@ -58,6 +58,7 @@ export interface SheetConfig {
   isConnected: boolean;
   lastSyncedAt: string | null;
   sheetTabs: string[];
+  appsScriptUrl?: string;
 }
 
 export interface MonthlyRecapSummary {

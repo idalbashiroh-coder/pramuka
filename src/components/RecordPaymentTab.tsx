@@ -17,13 +17,15 @@ import {
   Check,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { GudepSettings, PaymentMethod, PaymentRecord, ScoutMember } from '../types/scout';
+import { GudepSettings, PaymentMethod, PaymentRecord, ScoutMember, SheetConfig } from '../types/scout';
 import { formatRupiah, formatTanggalIndo, formatBulanIndo } from '../utils/formatters';
 
 interface RecordPaymentTabProps {
   members: ScoutMember[];
   transactions: PaymentRecord[];
   settings: GudepSettings;
+  sheetConfig?: SheetConfig;
+  onOpenSheetModal?: () => void;
   onAddPayment: (record: Omit<PaymentRecord, 'id' | 'timestamp'>) => Promise<PaymentRecord>;
   onBatchPayRegu: (
     reguName: string,
@@ -40,6 +42,8 @@ export const RecordPaymentTab: React.FC<RecordPaymentTabProps> = ({
   members,
   transactions,
   settings,
+  sheetConfig,
+  onOpenSheetModal,
   onAddPayment,
   onBatchPayRegu,
   onOpenReceipt,
@@ -90,13 +94,20 @@ export const RecordPaymentTab: React.FC<RecordPaymentTabProps> = ({
   // Check which members have paid for this specific date / week
   const paidMap = React.useMemo(() => {
     const map = new Map<string, PaymentRecord>();
+    const nameMap = new Map<string, PaymentRecord>();
     transactions.forEach((t) => {
       if (t.monthPeriod === monthPeriod && t.weekNumber === weekNumber) {
-        map.set(t.memberId, t);
+        if (t.memberId) map.set(t.memberId, t);
+        if (t.memberName) nameMap.set(t.memberName.toLowerCase().trim(), t);
+      }
+    });
+    members.forEach((m) => {
+      if (!map.has(m.id) && nameMap.has(m.name.toLowerCase().trim())) {
+        map.set(m.id, nameMap.get(m.name.toLowerCase().trim())!);
       }
     });
     return map;
-  }, [transactions, monthPeriod, weekNumber]);
+  }, [transactions, monthPeriod, weekNumber, members]);
 
   // Handle single payment
   const handleSinglePayment = async (member: ScoutMember, amountToPay: number) => {
@@ -239,6 +250,24 @@ export const RecordPaymentTab: React.FC<RecordPaymentTabProps> = ({
             <p className="text-xs text-stone-500">
               Pilih tanggal latihan & catat iuran tunai atau non-tunai secara cepat per-regu
             </p>
+            {sheetConfig?.appsScriptUrl ? (
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-900 border border-emerald-300 text-[11px] font-semibold mt-1">
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                <span>Auto-Save Aktif: Input iuran langsung disimpan ke Google Spreadsheet</span>
+              </div>
+            ) : (
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-amber-50 text-amber-900 border border-amber-200 text-[11px] mt-1">
+                <span>💡 Ingin data langsung masuk ke Google Sheets?</span>
+                {onOpenSheetModal && (
+                  <button
+                    onClick={onOpenSheetModal}
+                    className="font-bold underline text-amber-900 hover:text-amber-950"
+                  >
+                    Aktifkan Auto-Save di menu Database &rarr;
+                  </button>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Quick Session Stats & Batch Pay Button */}
@@ -474,14 +503,14 @@ export const RecordPaymentTab: React.FC<RecordPaymentTabProps> = ({
               Tidak ada anggota yang cocok dengan pencarian / filter.
             </div>
           ) : (
-            filteredMembers.map((member) => {
+            filteredMembers.map((member, idx) => {
               const payment = paidMap.get(member.id);
               const isPaid = !!payment;
               const isPendingThisMember = isSubmitting === member.id;
 
               return (
                 <div
-                  key={member.id}
+                  key={`${member.id}-${idx}`}
                   className={`p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition ${
                     isPaid ? 'bg-emerald-50/30 hover:bg-emerald-50/50' : 'hover:bg-amber-50/20'
                   }`}
